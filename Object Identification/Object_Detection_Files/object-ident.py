@@ -58,5 +58,3 @@ if __name__ == "__main__":
     # Release the camera and close all windows
     cap.release()
     cv2.destroyAllWindows()
-
-#test
