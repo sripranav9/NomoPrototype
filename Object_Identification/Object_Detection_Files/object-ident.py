@@ -8,7 +8,7 @@ with open(classFile,"rt") as f:
     classNames = f.read().rstrip("\n").split("\n")
 
 configPath = "Object_Identification/Object_Detection_Files/ssd_mobilenet_v3_large_coco_2020_01_14.pbtxt"
-weightsPath = "Object_Identification/Object_Detection_Filesq/frozen_inference_graph.pb"
+weightsPath = "Object_Identification/Object_Detection_Files/frozen_inference_graph.pb"
 
 net = cv2.dnn_DetectionModel(weightsPath,configPath)
 net.setInputSize(320,320)
