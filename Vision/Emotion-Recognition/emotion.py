@@ -18,7 +18,8 @@ while True:
     rgb_frame = cv2.cvtColor(gray_frame, cv2.COLOR_GRAY2RGB)
 
     # Detect faces in the frame
-    faces = face_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+    # faces = face_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+    faces = face_cascade.detectMultiScale(gray_frame, scaleFactor=1.05, minNeighbors=7, minSize=(30, 30)) #change
 
     for (x, y, w, h) in faces:
         # Extract the face ROI (Region of Interest)
@@ -30,10 +31,12 @@ while True:
 
         # Determine the dominant emotion
         emotion = result[0]['dominant_emotion']
+        confidence = result[0]['emotion'][emotion]
 
         # Draw rectangle around face and label with predicted emotion
         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
-        cv2.putText(frame, emotion, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+        # cv2.putText(frame, emotion, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2) # Display without the confidence indicator
+        cv2.putText(frame, f"{emotion} ({confidence:.2f}%)", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2) # Display the confidence indicator #change
 
     # Display the resulting frame
     cv2.imshow('Real-time Emotion Detection', frame)
