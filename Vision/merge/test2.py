@@ -60,6 +60,14 @@ def run(face_model: str, gesture_model: str, camera_id: int, width: int, height:
     )
     gesture_recognizer = vision.GestureRecognizer.create_from_options(gesture_options)
 
+    # Variables for debounce and state tracking
+    last_num_people = None
+    last_gesture = None
+    gesture_timer = time.time()  # Timer to manage gesture debounce duration
+    update_interval = 2  # Interval for logging and actions in seconds
+    closed_fist_counter = 0 # Interval for hold for desk mode
+    alone_timer_start = None # Interval to display that it's lonely
+
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
@@ -67,6 +75,7 @@ def run(face_model: str, gesture_model: str, camera_id: int, width: int, height:
             break
 
         # Frame Skipping
+        # This is done to reduce the load on the Raspberry Pi. It only processes every 5th frame.
         FRAME_COUNTER += 1
         if FRAME_COUNTER % skip_frames != 0:
             continue
@@ -84,29 +93,55 @@ def run(face_model: str, gesture_model: str, camera_id: int, width: int, height:
         # Count Detected Faces
         num_people = len(FACE_DETECTION_RESULT.detections) if FACE_DETECTION_RESULT else 0
 
-        # Process and Display Detected Gestures
-        gesture_detected_list = []
+        # Debounce Gesture Recognition
+        gesture_detected = None
         if GESTURE_RESULT_LIST:
             for gesture_result in GESTURE_RESULT_LIST:
-                for gesture in gesture_result.gestures:
-                    category_name = gesture[0].category_name
-                    gesture_detected_list.append(category_name)
+                if gesture_result.gestures:
+                    current_gesture = gesture_result.gestures[0][0].category_name
+                    if current_gesture != last_gesture and time.time() - gesture_timer > update_interval:
+                        last_gesture = current_gesture
+                        gesture_timer = time.time()  # Reset timer
+                    gesture_detected = current_gesture
+                    break
             GESTURE_RESULT_LIST.clear()
 
         # Interaction Logic (State-Based Logging)
-        if time.time() - LOG_TIMER > 2:  # Log every 2 seconds
-            if num_people >= 3:
-                print(f"{num_people} people detected! Moving back and closing eyes.")
-            elif (num_people < 3 and num_people > 0) and "Open_Palm" in gesture_detected_list:
-                print(f"{num_people} people detected with an open palm! Waving Back! Hi!")
-            elif (num_people < 3 and num_people > 0) and "Thumb_Up" in gesture_detected_list:
-                print(f"{num_people} people detected with a thumbs-up! Cheers!")
-            elif num_people == 0 and gesture_detected_list:
-                print(f"Gestures detected without faces: {gesture_detected_list}. Are you a ghost?")
-            elif num_people > 0:
-                print(f"{num_people} people detected. Awaiting interaction...")
+        if time.time() - LOG_TIMER > update_interval:
+            if num_people == 0:
+                # Start the "alone" timer if it hasn't started yet
+                if  not gesture_detected and alone_timer_start is None:
+                    alone_timer_start = time.time()
+                
+                # Someone is hiding?
+                elif gesture_detected:
+                    print(f"\n{gesture_detected} detected. Where's your face human? \nAre you a ghost?")
+                    alone_timer_start = None
+
+                # Check if 10 seconds have elapsed since the "alone" timer started
+                elif alone_timer_start is not None and time.time() - alone_timer_start > 10:
+                    print("\nWhere's everyone? \nI need people! Talk to me!")
+                    alone_timer_start = None  # Reset the timer once the message is displayed
             else:
-                continue
+                # Reset the "alone" timer once people are detected
+                alone_timer_start = None
+                if num_people >= 3:
+                    print(f"{num_people} people detected! \nMoving back and closing eyes.")
+                elif (num_people < 3 and num_people > 0) and gesture_detected == "Open_Palm":
+                    print(f"{num_people} people detected with an open palm! \nWaving Back! Hii!")
+                elif (num_people < 3 and num_people > 0) and gesture_detected == "Thumb_Up":
+                    print(f"{num_people} people detected with a thumbs-up! \nCheers!")
+                elif (num_people < 3 and num_people > 0) and gesture_detected == "Closed_Fist":
+                    if closed_fist_counter == 1:
+                        print(f"Starting desk mode!")
+                        closed_fist_counter = 0
+                    else:
+                        print(f"{num_people} people detected with closed fist. \nChecking for desk mode.")
+                        closed_fist_counter += 1
+                elif num_people > 0:
+                    print(f"{num_people} people detected. Awaiting interaction...")
+                else:
+                    continue
             LOG_TIMER = time.time()
 
         # Annotate Frame
@@ -119,8 +154,8 @@ def run(face_model: str, gesture_model: str, camera_id: int, width: int, height:
                 cv2.putText(frame, "Face", (start_point[0], start_point[1] - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        if gesture_detected_list:
-            cv2.putText(frame, f"Gestures: {', '.join(gesture_detected_list)}", (10, 50),
+        if gesture_detected:
+            cv2.putText(frame, f"Gesture: {gesture_detected}", (10, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
         # Calculate and display FPS
@@ -145,8 +180,8 @@ def run(face_model: str, gesture_model: str, camera_id: int, width: int, height:
 
 if __name__ == "__main__":
     # Define the face and gesture models
-    face_model_path = "face-detector/detector.tflite"  # Update with your model path
-    gesture_model_path = "gesture-recognition/gesture_recognizer.task"  # Update with your model path
+    face_model_path = "face-detector/detector.tflite"  # Update with the actual path
+    gesture_model_path = "gesture-recognition/gesture_recognizer.task"  # Update with the actual path
 
     # Run the combined detection with frame skipping
     run(face_model_path, gesture_model_path, camera_id=1, width=640, height=480, skip_frames=5)

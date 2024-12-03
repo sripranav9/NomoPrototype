@@ -1,11 +1,3 @@
-'''
-- Nomo, Interactive Media Capstone Project, NYU Abu Dhabi. By Sri Pranav Srivatsavai and Liza Datsenko, 2024-25.
-- Developed by Sri Pranav Srivatsavai for the mini capstone exhibition, Fall 2024.
-- This script combines the gesture_recognition and face_detection tasks to detect the number of faces and their 
-hand gesture using a live camera feed.
-- Thanks to ChatGPT Model 4o for it's assistance in this process.
-'''
-
 import time
 import cv2
 import mediapipe as mp
@@ -13,13 +5,15 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from mediapipe.framework.formats import landmark_pb2
 
+# Global Variables
 FACE_DETECTION_RESULT = None
 GESTURE_RESULT_LIST = []
 COUNTER, FPS = 0, 0
 START_TIME = time.time()
 LOG_TIMER = time.time()  # Timer for reducing log frequency
+FRAME_COUNTER = 0  # For skipping frames
 
-# MediaPipe utilities initialized here
+# Initialize MediaPipe utilities
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 
@@ -34,10 +28,10 @@ def gesture_callback(result: vision.GestureRecognizerResult, unused_output_image
     GESTURE_RESULT_LIST.append(result)
 
 # Function to initialize and run combined detections
-def run(face_model: str, gesture_model: str, camera_id: int, width: int, height: int):
-    global FPS, COUNTER, START_TIME, LOG_TIMER
+def run(face_model: str, gesture_model: str, camera_id: int, width: int, height: int, skip_frames: int = 3):
+    global FPS, COUNTER, START_TIME, LOG_TIMER, FRAME_COUNTER
 
-    # Start capturing video - using the OpenCV VideoCapture
+    # Start capturing video
     cap = cv2.VideoCapture(camera_id)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
@@ -66,17 +60,25 @@ def run(face_model: str, gesture_model: str, camera_id: int, width: int, height:
     )
     gesture_recognizer = vision.GestureRecognizer.create_from_options(gesture_options)
 
-    # Variables for debounce and state tracking: We keep track of this so that we can restrict the output to changes only
+    # Variables for debounce and state tracking
     last_num_people = None
     last_gesture = None
     gesture_timer = time.time()  # Timer to manage gesture debounce duration
     update_interval = 2  # Interval for logging and actions in seconds
-    
+    closed_fist_counter = 0 # Interval for hold for desk mode
+    alone_timer_start = 0 # Interval to display that it's lonely
+
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
             print("Error: Unable to read from the camera.")
             break
+
+        # Frame Skipping
+        # This is done to reduce the load on the Raspberry Pi. It only processes every 5th frame.
+        FRAME_COUNTER += 1
+        if FRAME_COUNTER % skip_frames != 0:
+            continue
 
         frame = cv2.flip(frame, 1)  # Flip for a mirrored view
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -107,13 +109,34 @@ def run(face_model: str, gesture_model: str, camera_id: int, width: int, height:
         # Interaction Logic (State-Based Logging)
         if time.time() - LOG_TIMER > update_interval:
             if num_people >= 3:
-                print(f"{num_people} people detected! Moving back and closing eyes.")
-            elif num_people < 3 and gesture_detected == "Open_Palm":
-                print(f"{num_people} people detected with an open palm! Saying Hi.")
-            elif num_people < 3 and gesture_detected == "Thumb_Up":
-                print(f"{num_people} people detected with a thumbs-up! Waving back.")
+                print(f"{num_people} people detected! \nMoving back and closing eyes.")
+                alone_timer_start = None  # Reset alone timer
+            elif (num_people < 3 and num_people > 0) and gesture_detected == "Open_Palm":
+                print(f"{num_people} people detected with an open palm! \nWaving Back! Hii!")
+                alone_timer_start = None  # Reset alone timer
+            elif (num_people < 3 and num_people > 0) and gesture_detected == "Thumb_Up":
+                print(f"{num_people} people detected with a thumbs-up! \nCheers!")
+                alone_timer_start = None  # Reset alone timer
+            elif (num_people < 3 and num_people > 0) and gesture_detected == "Closed_Fist":
+                if closed_fist_counter == 1:
+                    print(f"Starting desk mode!")
+                    closed_fist_counter = 0
+                else:
+                    print(f"{num_people} people detected with closed fist. \nChecking for desk mode.")
+                    closed_fist_counter += 1
+                alone_timer_start = None  # Reset alone timer
+            elif num_people == 0:
+                # Start timer if not already started
+                if alone_timer_start is None:
+                    alone_timer_start = time.time()
+
+                # Check if alone for 10 seconds
+                if time.time() - alone_timer_start > 10:
+                    print(f"I am alone. Is anyone there? Come talk to me pwease.")
+                    alone_timer_start = None  # Reset timer after logging
             else:
-                print(f"{num_people} people detected. Awaiting interaction...")
+                alone_timer_start = None  # Reset timer when people reappear
+            
             LOG_TIMER = time.time()
 
         # Annotate Frame
@@ -155,5 +178,5 @@ if __name__ == "__main__":
     face_model_path = "face-detector/detector.tflite"  # Update with the actual path
     gesture_model_path = "gesture-recognition/gesture_recognizer.task"  # Update with the actual path
 
-    # Run the combined detection
-    run(face_model_path, gesture_model_path, camera_id=1, width=640, height=480)
+    # Run the combined detection with frame skipping
+    run(face_model_path, gesture_model_path, camera_id=1, width=640, height=480, skip_frames=5)
