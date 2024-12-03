@@ -145,7 +145,7 @@ def main():
   # Here, we use OpenCV and create a VideoCapture object for each potential ID with 'cap = cv2.VideoCapture(i)'.
   # If 'cap' is None or not 'cap.isOpened()', it indicates the camera ID is not available.
   parser.add_argument(
-      '--cameraId', help='Id of camera.', required=False, type=int, default=1) # 1 for built-in camera
+      '--cameraId', help='Id of camera.', required=False, type=int, default=0) # 1 for built-in camera
   parser.add_argument(
       '--frameWidth',
       help='Width of frame to capture from camera.',
