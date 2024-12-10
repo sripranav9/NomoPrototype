@@ -1,3 +1,10 @@
+# Created by Sri Pranav Srivatsavai
+# Date: November 2024
+# Capstone Seminar | Capstone Project
+
+# Notes:
+# This has been tested on a Mac for now, it will later be shifted to a Rapsberry Pi.
+
 import time
 import cv2
 import mediapipe as mp
