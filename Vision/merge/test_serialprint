@@ -1,0 +1,16 @@
+import serial
+import time
+
+# Connect to Arduino
+ser = serial.Serial("/dev/tty.usbmodem11401", 115200, timeout=1)
+# Vairables for pyserial
+ser.setDTR(False)
+time.sleep(1)
+ser.flushInput()
+ser.setDTR(True)
+time.sleep(2)
+
+# Send command
+ser.write(b'4')  # Send the command
+ser.flush()  # Ensure it is sent
+
