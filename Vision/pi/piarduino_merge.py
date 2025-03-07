@@ -1,5 +1,6 @@
 import time
 import cv2
+import random
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -7,7 +8,41 @@ from flask import Flask, Response
 from picamera2 import Picamera2
 import serial
 
-# Serial to connect to the Raspberry Pi
+# Flask App for Streaming
+app = Flask(__name__)
+
+# ** GLOBAL VARIABLES **
+FACE_DETECTION_RESULT = None
+GESTURE_RESULT_LIST = []
+FRAME_COUNTER = 0  # For skipping frames
+
+#Flags
+study_mode_active = False
+standby_mode_active = False
+check_for_people = False
+previous_command = None
+
+break_first_nudge_sent = False
+break_second_nudge_sent = False
+study_first_nudge_sent = False
+study_second_nudge_sent = False
+
+# Timers
+break_start_time = None
+study_start_time = None
+alone_timer_start = None  # Track when no one is detected
+
+# Counters
+closed_fist_counter = 0
+thumb_up_counter = 0
+previous_num_people = 0
+
+COUNTER, FPS = 0, 0
+START_TIME = time.time()
+LOG_TIMER = time.time()  # Timer for reducing log frequency
+# ** END OF GLOBAL VARIABLES **
+
+# Serial variables
 ser = serial.Serial("/dev/ttyACM0", 115200, timeout=1)
 # Vairables for pyserial
 ser.setDTR(False)
@@ -15,20 +50,6 @@ time.sleep(1)
 ser.flushInput()
 ser.setDTR(True)
 time.sleep(2)
-
-# Flask App for Streaming
-app = Flask(__name__)
-
-# Global Variables
-FACE_DETECTION_RESULT = None
-GESTURE_RESULT_LIST = []
-FRAME_COUNTER = 0  # For skipping frames
-closed_fist_counter = 0
-alone_timer_start = None  # Track when no one is detected
-COUNTER, FPS = 0, 0
-START_TIME = time.time()
-LOG_TIMER = time.time()  # Timer for reducing log frequency
-
 
 # Initialize MediaPipe utilities
 mp_drawing = mp.solutions.drawing_utils
@@ -51,9 +72,30 @@ picam2.configure(picam2.create_video_configuration(main={"size": (960, 540), "fo
 # picam2.configure(picam2.create_video_configuration(main={"size": (1280, 720), "format": "RGB888"})) # HD resolution
 picam2.start()
 
+# Function to send commands to Arduino only when there is a change
+# def send_command(command):
+#     global previous_command
+#     if command != previous_command:
+#         ser.write(command)
+#         print(f"Sent to Arduino: {command}")
+#         previous_command = command  # Update last sent command
+
+def send_command(command):
+    global previous_command
+    if ser is None:
+        print(f"WARNING: Serial port not available. Skipping command: {command}")
+        return  # Skip sending if no connection
+
+    if command != previous_command:
+        ser.flushInput()  # Clear any buffered input before sending new data
+        ser.write(command)  # Send command to Arduino
+        ser.flush()  # Ensure the command is sent immediately
+        print(f"Sent to Arduino: {command}")
+        previous_command = command  # Update last sent command
+
 # Function to generate frames with detection and logging
 def generate_frames(face_model: str, gesture_model: str, skip_frames: int = 3):
-    global FRAME_COUNTER, closed_fist_counter, alone_timer_start, FPS, COUNTER, START_TIME, LOG_TIMER
+    global FRAME_COUNTER, closed_fist_counter, alone_timer_start, FPS, COUNTER, START_TIME, LOG_TIMER, previous_num_people, thumb_up_counter, check_for_people, study_mode_active, standby_mode_active, break_start_time, study_start_time, break_first_nudge_sent, break_second_nudge_sent, study_first_nudge_sent, study_second_nudge_sent, previous_command
 
     # Initialize Face Detection
     face_base_options = python.BaseOptions(model_asset_path=face_model)
@@ -121,50 +163,233 @@ def generate_frames(face_model: str, gesture_model: str, skip_frames: int = 3):
         
         # Interaction Logic (State-Based Logging)
         if time.time() - LOG_TIMER > update_interval:
-            if num_people == 0:
-                # Start the "alone" timer if it hasn't started yet
-                if  not gesture_detected and alone_timer_start is None:
-                    alone_timer_start = time.time()
-                
-                # Someone is hiding?
-                elif gesture_detected:
-                    print(f"\n{gesture_detected} detected. Where's your face human? \nAre you a ghost?")
-                    ser.write(b'7') # send the command to arduino
-                    alone_timer_start = None
-
-                # Check if 10 seconds have elapsed since the "alone" timer started
-                elif alone_timer_start is not None and time.time() - alone_timer_start > 10:
-                    print("\nWhere's everyone? \nI need people! Talk to me!")
-                    ser.write(b'1') # send the command to arduino
-                    alone_timer_start = None  # Reset the timer once the message is displayed
-            else:
-                # Reset the "alone" timer once people are detected
-                alone_timer_start = None
-                if num_people >= 3:
-                    print(f"{num_people} people detected! \nMoving back and closing eyes.")
-                    ser.write(b'2') # send the command to arduino
-                elif (num_people < 3 and num_people > 0) and gesture_detected == "Open_Palm":
-                    print(f"{num_people} people detected with an open palm! \nWaving Back! Hii!")
-                    ser.flushInput()  # Clear input buffer
-                    ser.write(b'4')   # Send the command
-                    ser.flush()       # Ensure the command is sent immediately
-                elif (num_people < 3 and num_people > 0) and gesture_detected == "Thumb_Up":
-                    print(f"{num_people} people detected with a thumbs-up! \nCheers!")
-                    ser.write(b'5') # send the command to arduino
-                elif (num_people < 3 and num_people > 0) and gesture_detected == "Closed_Fist":
-                    if closed_fist_counter == 1:
-                        print(f"Starting desk mode!")
-                        ser.write(b'6') # send the command to arduino
-                        closed_fist_counter = 0
-                    else:
-                        print(f"{num_people} people detected with closed fist. \nChecking for desk mode.")
-                        closed_fist_counter += 1
-                elif num_people > 0:
-                    print(f"{num_people} people detected. Awaiting interaction...")
-                    ser.write(b'3') # send the command to arduino
+            # Maintain current location if no new data is received
+            try:
+                # Uncomment
+                if ser.in_waiting:
+                    current_location = ser.readline().decode().strip()
+                    print(f"Detected: {current_location}")
                 else:
-                    continue
+                    current_location = current_location if 'current_location' in locals() else "Nowhere"
+                    # current_location = current_location if 'current_location' in locals() else "BLUE"
+            except Exception as e:
+                print(f"Serial read error: {e}")
+                current_location = "Nowhere"
+            
+            # Determine current state based on number of people
+            current_num_people = num_people
+            # print(current_num_people, num_people)
+            
+            # Only send a signal if the number of detected people changes
+            if current_num_people != previous_num_people:
+                if current_num_people >= 3:
+                    send_command(b'SHY') # Universal - is activated during study mode too
+
+                # Reset flags because they were triggered when there were 0 people, but now there is atleast a positive change
+                if current_num_people > 0:
+                    alone_timer_start = None
+                    check_for_people = False
+                
+                if current_num_people < 3 and current_num_people > 0:
+                    send_command(b'NEUTRAL') # Command to Arduino to make the servo come back to normal.
+                previous_num_people = current_num_people  # Update previous state
+
+            
+            if current_num_people == 0:
+                if not gesture_detected and alone_timer_start is None:
+                    alone_timer_start = time.time()
+                elif alone_timer_start is not None and time.time() - alone_timer_start > 15:
+                    check_for_people = True
+                    alone_timer_start = None # Reset alone timer - because action triggered
+                
+            
+            # Detecting Gestures for Study Mode Activation and Extension
+            if gesture_detected == "Closed_Fist":
+                if closed_fist_counter == 2:
+                    if study_mode_active:
+                        if current_location == "BLUE":
+                            send_command(b'EXTEND_STUDY')
+                            study_start_time = time.time()
+                            #Reset break related flags
+                            break_first_nudge_sent = False
+                            break_second_nudge_sent = False
+                            break_start_time = None  # Reset break tracking
+                            break_location = None
+                        
+                        # Study mode already active, this means they are on a break
+                        elif current_location in ("PURPLE", "YELLOW"):
+                            send_command(b'EXTEND_BREAK')
+                            break_start_time = time.time()
+                            # Reset back to study related flags
+                            study_first_nudge_sent = False
+                            study_second_nudge_sent = False
+                            study_start_time = None  # Reset study tracking
+                    else:
+                        if current_location == "BLUE":
+                            send_command(b'STUDY')
+                            study_mode_active = True
+                            study_start_time = time.time()
+                        else:
+                            send_command(b'MOVE_TO_DESK')
+                    closed_fist_counter = 0
+                else:
+                    closed_fist_counter += 1
+            
+            # Study Mode Logic
+            if study_mode_active:
+                
+                standby_mode_active = False
+                
+                # DURING STUDY
+                if break_start_time is None:
+                    elapsed_study_time = time.time() - study_start_time
+
+                
+                if elapsed_study_time > 40 and not break_first_nudge_sent: # 1 min for the capstone showcase
+                    break_location = random.choice(["PURPLE", "YELLOW"])
+                    # Nudge 1
+                    send_command(f'BREAK_{break_location.upper()}'.encode())
+                    break_first_nudge_sent = True # Mark the first nudge sent
+
+                # Might be handled by Arduino. Pi will send a signal for second nudge check
+                if elapsed_study_time > 70 and not break_second_nudge_sent:
+                    send_command(b'CHECK_LOCATION')
+                    time.sleep(1) # Request location and get it back
+                    if current_location == "BLUE":
+                        # Nudge 2 - Sound
+                        send_command(b'SECOND_BREAK_NUDGE')
+                        break_second_nudge_sent = True # Mark the first nudge sent
+                    elif current_location not in ("PURPLE", "YELLOW", "BLUE"):
+                        pass # the robot is being transported
+
+                # Check if the break_location is reached - MIGHT BE HANDlED BY ARDUINO
+                if break_first_nudge_sent and break_start_time is None: 
+                    if current_location == break_location:
+                        # print("Break location reached, starting break time")
+                        break_start_time = time.time()
+                        study_start_time = None # Reset study time during the break
+                        # resetting from the last study session
+                        # study_first_nudge_sent = False
+                        # study_second_nudge_sent = False
+        
+                # DURING BREAK
+                if break_start_time is not None and (time.time() - break_start_time > 20) and not study_first_nudge_sent: # 80 TBC
+                    send_command(b'BACK_TO_STUDY') # Denote to be taken back
+                    study_first_nudge_sent = True
+
+                # work - requst location only once after its done
+                if break_start_time is not None and (time.time() - break_start_time > 30) and not study_second_nudge_sent:  
+                    send_command(b'CHECK_LOCATION')
+                    study_second_nudge_sent = True
+                    time.sleep(2)
+                    if current_location == break_location:
+                        # Nudge 2 - Sound
+                        send_command(b'SECOND_STUDY_NUDGE')
+                        break_second_nudge_sent = True # Mark the first nudge sent
+                    elif current_location not in ("PURPLE", "YELLOW", "BLUE"):
+                        pass # the robot is being transported
+
+                # Check if the study_location is reached - Might be handled by the Arduino
+                if study_first_nudge_sent:
+                    if current_location == "BLUE": # Taken back to desk - all good
+                        send_command(b'STUDY_RESTART')
+                        
+                        break_start_time = None # Reset break start time because
+                        study_start_time = time.time()
+                        # Reset the flags for next break
+                        break_first_nudge_sent = False
+                        break_second_nudge_sent = False
+                        study_first_nudge_sent = False
+                        study_second_nudge_sent = False
+                        break_location = None # Resets break location
+        
+                # Quit Study Mode
+                if gesture_detected == "Thumb_Up":
+                    if thumb_up_counter == 2:
+                        study_mode_active = False
+                        print('Study Mode DEACTIVATED')
+                        thumb_up_counter = 0
+                    
+                    else:
+                        thumb_up_counter+=1
+              
+            # Standby Mode Logic
+            if not study_mode_active:
+                # Make sure we are only sending the standby mode once
+                if not standby_mode_active:
+                    send_command(b'STANDBY')
+                    standby_mode_active = True
+                    
+                # if current_location == "Nowhere":
+                #     send_command(b'STANDBY')
+                # else:
+                #     color_mapping = {"Desk": b"ST_B", "Armchair": b"ST_P", "Table": b"ST_Y"}
+                #     send_command(color_mapping.get(current_location, b"ST_W"))
+
+                if gesture_detected == "Open_Palm":
+                    if previous_command != b'WAVE':
+                        # To ingore flush and input on the send_command function
+                        ser.write(b'WAVE')
+                        print("Sent to Arduino: b'WAVE'")
+                        previous_command = b'WAVE'
+                
+                if check_for_people:
+                    send_command(b'LOOK_LEFT')
+                    time.sleep(2)
+                    if current_num_people > 0:
+                        send_command(b'SOUND')
+                        send_command(b'NEUTRAL')
+                        alone_timer_start = None
+                    else:
+                        send_command(b'LOOK_RIGHT')
+                        time.sleep(2)
+                        if current_num_people > 0:
+                            send_command(b'SOUND')
+                            send_command(b'NEUTRAL')
+                            alone_timer_start = None
+                        else:
+                            send_command(b'NEUTRAL')
+                            alone_timer_start = time.time()
+                    
+                    check_for_people = False # Reset timer
+            
             LOG_TIMER = time.time()
+                    
+            # if num_people == 0:
+            #     # Start the "alone" timer if it hasn't started yet
+            #     if  not gesture_detected and alone_timer_start is None:
+            #         alone_timer_start = time.time()
+                
+            #     # Someone is hiding?
+            #     elif gesture_detected:
+            #         print(f"\n{gesture_detected} detected. Where's your face human? \nAre you a ghost?")
+            #         alone_timer_start = None
+
+            #     # Check if 10 seconds have elapsed since the "alone" timer started
+            #     elif alone_timer_start is not None and time.time() - alone_timer_start > 10:
+            #         print("\nWhere's everyone? \nI need people! Talk to me!")
+            #         alone_timer_start = None  # Reset the timer once the message is displayed
+            # else:
+            #     # Reset the "alone" timer once people are detected
+            #     alone_timer_start = None
+            #     if num_people >= 3:
+            #         print(f"{num_people} people detected! \nMoving back and closing eyes.")
+            #     elif (num_people < 3 and num_people > 0) and gesture_detected == "Open_Palm":
+            #         print(f"{num_people} people detected with an open palm! \nWaving Back! Hii!")
+            #     elif (num_people < 3 and num_people > 0) and gesture_detected == "Thumb_Up":
+            #         print(f"{num_people} people detected with a thumbs-up! \nCheers!")
+            #     elif (num_people < 3 and num_people > 0) and gesture_detected == "Closed_Fist":
+            #         if closed_fist_counter == 1:
+            #             print(f"Starting desk mode!")
+            #             closed_fist_counter = 0
+            #         else:
+            #             print(f"{num_people} people detected with closed fist. \nChecking for desk mode.")
+            #             closed_fist_counter += 1
+            #     elif num_people > 0:
+            #         print(f"{num_people} people detected. Awaiting interaction...")
+            #     else:
+            #         continue
+            # LOG_TIMER = time.time()
 
         # Draw Bounding Boxes
         if FACE_DETECTION_RESULT:
