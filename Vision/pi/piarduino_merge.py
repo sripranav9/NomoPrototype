@@ -32,6 +32,13 @@ break_start_time = None
 study_start_time = None
 alone_timer_start = None  # Track when no one is detected
 
+look_state = None
+look_start_time = 0
+LOOK_DURATION = 2  # how many seconds you want to spend "looking"
+
+wave_last_time = None
+WAVE_COOLDOWN = 3  # seconds
+
 # Counters
 closed_fist_counter = 0
 thumb_up_counter = 0
@@ -95,7 +102,7 @@ def send_command(command):
 
 # Function to generate frames with detection and logging
 def generate_frames(face_model: str, gesture_model: str, skip_frames: int = 3):
-    global FRAME_COUNTER, closed_fist_counter, alone_timer_start, FPS, COUNTER, START_TIME, LOG_TIMER, previous_num_people, thumb_up_counter, check_for_people, study_mode_active, standby_mode_active, break_start_time, study_start_time, break_first_nudge_sent, break_second_nudge_sent, study_first_nudge_sent, study_second_nudge_sent, previous_command
+    global FRAME_COUNTER, closed_fist_counter, alone_timer_start, FPS, COUNTER, START_TIME, LOG_TIMER, previous_num_people, thumb_up_counter, check_for_people, study_mode_active, standby_mode_active, break_start_time, study_start_time, break_first_nudge_sent, break_second_nudge_sent, study_first_nudge_sent, study_second_nudge_sent, previous_command, LOOK_DURATION, look_start_time, look_state, wave_last_time, WAVE_COOLDOWN
 
     # Initialize Face Detection
     face_base_options = python.BaseOptions(model_asset_path=face_model)
@@ -180,27 +187,41 @@ def generate_frames(face_model: str, gesture_model: str, skip_frames: int = 3):
             current_num_people = num_people
             # print(current_num_people, num_people)
             
-            # Only send a signal if the number of detected people changes
+            # Detecting a change in people and reacting accordingly
             if current_num_people != previous_num_people:
-                if current_num_people >= 3:
-                    send_command(b'SHY') # Universal - is activated during study mode too
-
+                # 1) Takes precedence – people are detected
+                if previous_num_people == 0 and current_num_people > 0:
+                    # send_command(b'DETECTED') - Only works once because of the send_command logic
+                    ser.write(b'DETECTED')
+                    previous_command = b'DETECTED'
+                    print("Sent to Arduino: b'DETECTED'")
+                # 2) Be shy (Universal - is activated during study mode too)
+                elif current_num_people >= 3:
+                    send_command(b'SHY')
+                # 3) If expected people, normal position
+                elif current_num_people < 3 and current_num_people > 0:
+                    send_command(b'NEUTRAL') # Command to Arduino to make the servo come back to normal.
+                previous_num_people = current_num_people  # Update previous state
+                
                 # Reset flags because they were triggered when there were 0 people, but now there is atleast a positive change
                 if current_num_people > 0:
                     alone_timer_start = None
                     check_for_people = False
                 
-                if current_num_people < 3 and current_num_people > 0:
-                    send_command(b'NEUTRAL') # Command to Arduino to make the servo come back to normal.
-                previous_num_people = current_num_people  # Update previous state
+                # if current_num_people < 3 and current_num_people > 0:
+                #     send_command(b'NEUTRAL') # Command to Arduino to make the servo come back to normal.
+                # previous_num_people = current_num_people  # Update previous state
 
-            
+            # If people are 0, then trigger the alone timer
             if current_num_people == 0:
                 if not gesture_detected and alone_timer_start is None:
                     alone_timer_start = time.time()
                 elif alone_timer_start is not None and time.time() - alone_timer_start > 15:
                     check_for_people = True
                     alone_timer_start = None # Reset alone timer - because action triggered
+            else: 
+                alone_timer_start = None
+                check_for_people = False
                 
             
             # Detecting Gestures for Study Mode Activation and Extension
@@ -229,6 +250,14 @@ def generate_frames(face_model: str, gesture_model: str, skip_frames: int = 3):
                             send_command(b'STUDY')
                             study_mode_active = True
                             study_start_time = time.time()
+                            
+                            # Reset for a fresh study session
+                            break_first_nudge_sent = False
+                            break_second_nudge_sent = False
+                            break_start_time = None
+                            break_location = None
+                            study_first_nudge_sent = False
+                            study_second_nudge_sent = False
                         else:
                             send_command(b'MOVE_TO_DESK')
                     closed_fist_counter = 0
@@ -327,12 +356,13 @@ def generate_frames(face_model: str, gesture_model: str, skip_frames: int = 3):
                 #     send_command(color_mapping.get(current_location, b"ST_W"))
 
                 if gesture_detected == "Open_Palm":
-                    if previous_command != b'WAVE':
+                    if wave_last_time is None or (time.time() - wave_last_time >= WAVE_COOLDOWN):
                         # To ingore flush and input on the send_command function
+                        wave_last_time = time.time()
                         ser.write(b'WAVE')
                         print("Sent to Arduino: b'WAVE'")
-                        previous_command = b'WAVE'
-                
+
+                '''
                 if check_for_people:
                     send_command(b'LOOK_LEFT')
                     time.sleep(2)
@@ -352,6 +382,40 @@ def generate_frames(face_model: str, gesture_model: str, skip_frames: int = 3):
                             alone_timer_start = time.time()
                     
                     check_for_people = False # Reset timer
+                    '''
+                # 1) If we just set check_for_people and we have no "look" in progress:
+                if check_for_people and look_state is None:
+                    # Start by looking left
+                    send_command(b'LOOK_LEFT')
+                    look_state = 'looking_left'
+                    look_start_time = time.time()
+                    check_for_people = False  # We’ve now started the "look" sequence, so we reset timer
+                
+                # 2) Currently looking left
+                if look_state == 'looking_left':
+                    if time.time() - look_start_time >= LOOK_DURATION:
+                        # We’ve finished the left-look "wait"
+                        if current_num_people > 0:
+                            # send_command(b'NEUTRAL')
+                            alone_timer_start = None
+                            look_state = None  # Done
+                        else:
+                            # No people found, look right
+                            send_command(b'LOOK_RIGHT')
+                            look_state = 'looking_right'
+                            look_start_time = time.time()
+                
+                # 3) If we are currently looking right...
+                if look_state == 'looking_right':
+                    if time.time() - look_start_time >= LOOK_DURATION:
+                        if current_num_people > 0:
+                            # send_command(b'NEUTRAL')
+                            alone_timer_start = None
+                        else:
+                            send_command(b'NEUTRAL')
+                            alone_timer_start = time.time()
+                        look_state = None  # Done
+
             
             LOG_TIMER = time.time()
                     
