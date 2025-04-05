@@ -190,11 +190,9 @@ def generate_frames(face_model: str, gesture_model: str, skip_frames: int = 3):
             # Detecting a change in people and reacting accordingly
             if current_num_people != previous_num_people:
                 # 1) Takes precedence – people are detected
-                if previous_num_people == 0 and current_num_people > 0:
-                    # send_command(b'DETECTED') - Only works once because of the send_command logic
-                    ser.write(b'DETECTED')
-                    previous_command = b'DETECTED'
-                    print("Sent to Arduino: b'DETECTED'")
+                if previous_num_people == 0 and current_num_people > 0 and not study_mode_active:
+                    send_command(b'DETECTED') # Only works once because of the send_command logic
+                    time.sleep(1.5)
                 # 2) Be shy (Universal - is activated during study mode too)
                 elif current_num_people >= 3:
                     send_command(b'SHY')
@@ -303,7 +301,8 @@ def generate_frames(face_model: str, gesture_model: str, skip_frames: int = 3):
         
                 # DURING BREAK
                 if break_start_time is not None and (time.time() - break_start_time > 20) and not study_first_nudge_sent: # 80 TBC
-                    send_command(b'BACK_TO_STUDY') # Denote to be taken back
+                    if current_location != "BLUE":
+                        send_command(b'BACK_TO_STUDY') # Denote to be taken back
                     study_first_nudge_sent = True
 
                 # work - requst location only once after its done
